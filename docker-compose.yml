@@ -1,4 +1,3 @@
-version: '3.9'
 services:
   orders-service:
     build:
@@ -13,6 +12,7 @@ services:
       - POSTGRES_PASSWORD=orders_pass
       - POSTGRES_DB=orders_db
       - RABBITMQ_URL=amqp://rabbitmq:5672
+      - ORDERS_PRODUCT_FRESHNESS_MS=8000
     depends_on:
       - orders-db
       - rabbitmq
@@ -30,6 +30,7 @@ services:
       - PORT=3002
       - MONGO_URI=mongodb://payments-db:27017/payments
       - RABBITMQ_URL=amqp://rabbitmq:5672
+      - PAYMENTS_PRODUCT_FRESHNESS_MS=8000
     depends_on:
       - payments-db
       - rabbitmq
@@ -45,16 +46,13 @@ services:
     container_name: analytics-service
     environment:
       - PORT=3003
-      - POSTGRES_HOST=orders-db
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=orders_user
-      - POSTGRES_PASSWORD=orders_pass
-      - POSTGRES_DB=orders_db
-      - MONGO_URI=mongodb://payments-db:27017/payments
       - RABBITMQ_URL=amqp://rabbitmq:5672
+      - ORDERS_PRODUCT_FRESHNESS_MS=8000
+      - PAYMENTS_PRODUCT_FRESHNESS_MS=8000
+      - BUSINESS_SUMMARY_FRESHNESS_MS=8000
     depends_on:
-      - orders-db
-      - payments-db
+      - orders-service
+      - payments-service
       - rabbitmq
     networks:
       - meshnet

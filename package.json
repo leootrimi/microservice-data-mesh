@@ -1,0 +1,8 @@
+{
+  "name": "microservice-data-mesh-governance-demo",
+  "private": true,
+  "scripts": {
+    "verify:model": "node verification/verify-model.js",
+    "verify:stack": "node verification/verify-stack.js"
+  }
+}
