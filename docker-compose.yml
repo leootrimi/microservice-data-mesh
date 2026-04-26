@@ -1,0 +1,113 @@
+version: '3.9'
+services:
+  orders-service:
+    build:
+      context: .
+      dockerfile: services/orders-service/Dockerfile
+    container_name: orders-service
+    environment:
+      - PORT=3001
+      - POSTGRES_HOST=orders-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=orders_user
+      - POSTGRES_PASSWORD=orders_pass
+      - POSTGRES_DB=orders_db
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+    depends_on:
+      - orders-db
+      - rabbitmq
+    networks:
+      - meshnet
+    ports:
+      - "3001:3001"
+
+  payments-service:
+    build:
+      context: .
+      dockerfile: services/payments-service/Dockerfile
+    container_name: payments-service
+    environment:
+      - PORT=3002
+      - MONGO_URI=mongodb://payments-db:27017/payments
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+    depends_on:
+      - payments-db
+      - rabbitmq
+    networks:
+      - meshnet
+    ports:
+      - "3002:3002"
+
+  analytics-service:
+    build:
+      context: .
+      dockerfile: services/analytics-service/Dockerfile
+    container_name: analytics-service
+    environment:
+      - PORT=3003
+      - POSTGRES_HOST=orders-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=orders_user
+      - POSTGRES_PASSWORD=orders_pass
+      - POSTGRES_DB=orders_db
+      - MONGO_URI=mongodb://payments-db:27017/payments
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+    depends_on:
+      - orders-db
+      - payments-db
+      - rabbitmq
+    networks:
+      - meshnet
+    ports:
+      - "3003:3003"
+
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - analytics-service
+    networks:
+      - meshnet
+
+  orders-db:
+    image: postgres:15-alpine
+    container_name: orders-db
+    environment:
+      POSTGRES_USER: orders_user
+      POSTGRES_PASSWORD: orders_pass
+      POSTGRES_DB: orders_db
+    ports:
+      - "5432:5432"
+    networks:
+      - meshnet
+    volumes:
+      - orders-db-data:/var/lib/postgresql/data
+
+  payments-db:
+    image: mongo:6
+    container_name: payments-db
+    ports:
+      - "27017:27017"
+    networks:
+      - meshnet
+    volumes:
+      - payments-db-data:/data/db
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - meshnet
+
+volumes:
+  orders-db-data:
+  payments-db-data:
+
+networks:
+  meshnet:
+    driver: bridge
