@@ -2,6 +2,8 @@ require("dotenv").config();
 
 const express = require("express");
 const amqp = require("amqplib");
+const { Pool } = require('pg');
+const { MongoClient } = require('mongodb');
 
 const {
   getProductDefinition,
@@ -44,6 +46,82 @@ const summaryState = {
 };
 
 let channel;
+let pgPool;
+let mongoClient;
+let paymentsDb;
+
+async function connectDatabasesWithRetry(maxAttempts = 10) {
+  // Postgres (orders violations)
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      pgPool = new Pool({
+        host: process.env.POSTGRES_HOST || 'orders-db',
+        port: Number(process.env.POSTGRES_PORT || 5432),
+        user: process.env.POSTGRES_USER || 'orders_user',
+        password: process.env.POSTGRES_PASSWORD || 'orders_pass',
+        database: process.env.POSTGRES_DB || 'orders_db'
+      });
+
+      // quick check
+      await pgPool.query('SELECT 1');
+      break;
+    } catch (err) {
+      console.error(`Postgres connect attempt ${attempt} failed`, err.message || err);
+      await sleep(1000);
+    }
+  }
+
+  // MongoDB (payments violations)
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      mongoClient = new MongoClient(process.env.MONGO_URI || 'mongodb://payments-db:27017');
+      await mongoClient.connect();
+      paymentsDb = mongoClient.db(process.env.MONGO_DB || 'payments');
+      break;
+    } catch (err) {
+      console.error(`MongoDB connect attempt ${attempt} failed`, err.message || err);
+      await sleep(1000);
+    }
+  }
+}
+
+async function fetchPersistedOrdersViolations(limit = 20) {
+  if (!pgPool) return [];
+  try {
+    const res = await pgPool.query(
+      `SELECT id, type, message, details, created_at FROM violations ORDER BY created_at DESC LIMIT $1`,
+      [limit]
+    );
+    return res.rows.map(r => ({
+      id: r.id,
+      type: r.type,
+      message: r.message,
+      details: r.details,
+      createdAt: r.created_at
+    }));
+  } catch (err) {
+    console.error('Failed to fetch orders violations', err.message || err);
+    return [];
+  }
+}
+
+async function fetchPersistedPaymentsViolations(limit = 20) {
+  if (!paymentsDb) return [];
+  try {
+    const coll = paymentsDb.collection('violations');
+    const docs = await coll.find({}).sort({ createdAt: -1 }).limit(limit).toArray();
+    return docs.map(d => ({
+      _id: d._id,
+      type: d.type,
+      message: d.message,
+      details: d.details,
+      createdAt: d.createdAt
+    }));
+  } catch (err) {
+    console.error('Failed to fetch payments violations', err.message || err);
+    return [];
+  }
+}
 
 app.use(express.json());
 app.use((req, res, next) => {
@@ -302,7 +380,12 @@ app.get("/data-products/business-summary", (req, res) => {
   });
 });
 
-app.get("/governance/report", (req, res) => {
+app.get("/governance/report", async (req, res) => {
+  // include persisted violations
+  const persistedOrders = await fetchPersistedOrdersViolations(20);
+  const persistedPayments = await fetchPersistedPaymentsViolations(20);
+  const failedPaymentAttempts = persistedPayments.filter(p => p.type === 'quality').length;
+
   res.json({
     thesisAlignment: {
       domainOwnership: true,
@@ -320,14 +403,20 @@ app.get("/governance/report", (req, res) => {
     summary: {
       totalRevenue: summaryState.totalRevenue,
       failedPayments: summaryState.failedPayments,
+      failedPaymentAttempts,
       pendingOrders: summaryState.pendingOrders,
       generatedAt: summaryState.generatedAt
     },
-    recentViolations: governanceState.violations
+    recentViolations: governanceState.violations,
+    persistedViolations: {
+      orders: persistedOrders,
+      payments: persistedPayments
+    }
   });
 });
 
 async function start() {
+  await connectDatabasesWithRetry();
   await connectRabbitWithRetry();
 
   const port = Number(process.env.PORT || 3003);

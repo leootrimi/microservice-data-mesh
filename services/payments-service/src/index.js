@@ -33,6 +33,7 @@ const knownOrders = new Map();
 let mongoClient;
 let paymentsCollection;
 let paymentsDataProductCollection;
+let violationsCollection;
 let channel;
 
 app.use(express.json());
@@ -53,13 +54,18 @@ function sleep(ms) {
 }
 
 function addViolation(type, message, details = {}) {
-  governanceState.violations.unshift({
+  const v = {
     type,
     message,
     details,
     at: new Date().toISOString()
-  });
+  };
+
+  governanceState.violations.unshift(v);
   governanceState.violations = governanceState.violations.slice(0, 20);
+
+  // persist asynchronously
+  persistViolationToDb(v);
 }
 
 async function connectMongoWithRetry(maxAttempts = 20) {
@@ -70,12 +76,14 @@ async function connectMongoWithRetry(maxAttempts = 20) {
       const db = mongoClient.db();
       paymentsCollection = db.collection("payments");
       paymentsDataProductCollection = db.collection("payments_data_product");
+      violationsCollection = db.collection("violations");
 
       await paymentsCollection.createIndex({ orderId: 1 }, { unique: true });
       await paymentsDataProductCollection.createIndex(
         { orderId: 1 },
         { unique: true }
       );
+      await violationsCollection.createIndex({ createdAt: 1 });
       return;
     } catch (error) {
       console.error(`MongoDB connection attempt ${attempt} failed`, error.message);
@@ -100,6 +108,24 @@ async function getCatalogEntry() {
   return toCatalogEntry(productDefinition, {
     lastUpdatedAt: await getLatestPublishedAt()
   });
+}
+
+async function persistViolationToDb(v) {
+  try {
+    if (!violationsCollection) {
+      const db = mongoClient.db();
+      violationsCollection = db.collection('violations');
+    }
+
+    await violationsCollection.insertOne({
+      type: v.type,
+      message: v.message,
+      details: v.details || null,
+      createdAt: v.at
+    });
+  } catch (err) {
+    console.error('Failed to persist violation to MongoDB', err.message || err);
+  }
 }
 
 async function connectRabbitWithRetry(maxAttempts = 20) {

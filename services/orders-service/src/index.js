@@ -54,13 +54,18 @@ function sleep(ms) {
 }
 
 function addViolation(type, message, details = {}) {
-  governanceState.violations.unshift({
+  const v = {
     type,
     message,
     details,
     at: new Date().toISOString()
-  });
+  };
+
+  governanceState.violations.unshift(v);
   governanceState.violations = governanceState.violations.slice(0, 20);
+
+  // persist asynchronously, do not block request handling
+  persistViolationToDb(v);
 }
 
 async function connectRabbitWithRetry(maxAttempts = 20) {
@@ -80,25 +85,51 @@ async function connectRabbitWithRetry(maxAttempts = 20) {
 }
 
 async function initDb() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS orders (
-      order_id VARCHAR(50) PRIMARY KEY,
-      amount NUMERIC NOT NULL CHECK (amount > 0),
-      customer VARCHAR(100) NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
+  try {
+    console.log("Initializing database tables...");
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS orders_data_product (
-      order_id VARCHAR(50) PRIMARY KEY,
-      customer VARCHAR(100) NOT NULL,
-      amount NUMERIC NOT NULL CHECK (amount > 0),
-      order_status VARCHAR(20) NOT NULL,
-      source_updated_at TIMESTAMPTZ NOT NULL,
-      published_at TIMESTAMPTZ NOT NULL
-    )
-  `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS orders (
+        order_id VARCHAR(50) PRIMARY KEY,
+        amount NUMERIC NOT NULL CHECK (amount > 0),
+        customer VARCHAR(100) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    console.log("✅ orders table ready");
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS orders_data_product (
+        order_id VARCHAR(50) PRIMARY KEY,
+        customer VARCHAR(100) NOT NULL,
+        amount NUMERIC NOT NULL CHECK (amount > 0),
+        order_status VARCHAR(20) NOT NULL,
+        source_updated_at TIMESTAMPTZ NOT NULL,
+        published_at TIMESTAMPTZ NOT NULL
+      )
+    `);
+
+    console.log("✅ orders_data_product table ready");
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS violations (
+        id SERIAL PRIMARY KEY,
+        type VARCHAR(50) NOT NULL,
+        message TEXT NOT NULL,
+        details JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    console.log("✅ violations table ready");
+
+    console.log("Database initialization completed successfully");
+  } catch (error) {
+    console.error("❌ Database initialization failed:", error);
+
+    // optional: rethrow so app crashes instead of running in bad state
+    throw error;
+  }
 }
 
 async function getLatestPublishedAt() {
@@ -115,6 +146,17 @@ async function getCatalogEntry() {
   return toCatalogEntry(productDefinition, {
     lastUpdatedAt: await getLatestPublishedAt()
   });
+}
+
+async function persistViolationToDb(v) {
+  try {
+    await pool.query(
+      `INSERT INTO violations (type, message, details, created_at) VALUES ($1, $2, $3, $4)`,
+      [v.type, v.message, v.details || null, v.at]
+    );
+  } catch (err) {
+    console.error('Failed to persist violation to DB', err.message || err);
+  }
 }
 
 async function listProductRecords() {
